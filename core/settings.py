@@ -188,7 +188,7 @@ AUTHENTICATION_BACKENDS = (
 
 SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('JWT', ),
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=10080),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),  # Reducido de 7 días a 15 minutos por seguridad
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESFH_TOKENS':True,
     'BLACKLIST_AFTER_ROTATION': True,

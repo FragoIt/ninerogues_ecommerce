@@ -13,24 +13,25 @@ class GetItemsView(APIView):
         user = self.request.user
         try:
             cart = Cart.objects.get(user=user)
-            cart_items = CartItem.objects.order_by('product').filter(cart=cart)
+            # Optimización: usar select_related para obtener productos en una sola consulta
+            cart_items = CartItem.objects.select_related('product').order_by('product').filter(cart=cart)
 
             result = []
 
-            if CartItem.objects.filter(cart=cart).exists():
+            if cart_items.exists():
                 for cart_item in cart_items:
                     item = {}
 
                     item['id'] = cart_item.id
                     item['count'] = cart_item.count
-                    product = Product.objects.get(id=cart_item.product.id)
-                    product = ProductSerializer(product)
+                    # Ya no necesitamos hacer Product.objects.get() porque product ya está cargado
+                    product = ProductSerializer(cart_item.product)
 
                     item['product'] = product.data
 
                     result.append(item)
             return Response({'cart': result}, status=status.HTTP_200_OK)
-        except:
+        except Exception as e:
             return Response(
                 {'error': 'Something went wrong when retrieving cart items'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -76,7 +77,8 @@ class AddItemView(APIView):
                         total_items=total_items
                     )
                 
-                    cart_items = CartItem.objects.order_by(
+                    # Optimización: usar select_related para evitar consultas N+1
+                    cart_items = CartItem.objects.select_related('product').order_by(
                     'product').filter(cart=cart)
 
                     result = []
@@ -86,8 +88,7 @@ class AddItemView(APIView):
                         item = {}
                         item['id'] = cart_item.id
                         item['count'] = cart_item.count
-                        product = Product.objects.get(id=cart_item.product.id)
-                        product = ProductSerializer(product)
+                        product = ProductSerializer(cart_item.product)
 
                         item['product'] = product.data
 
@@ -189,7 +190,8 @@ class UpdateItemView(APIView):
                     product=product, cart=cart
                 ).update(count=count)
 
-                cart_items = CartItem.objects.order_by(
+                # Optimización: usar select_related para evitar consultas N+1
+                cart_items = CartItem.objects.select_related('product').order_by(
                     'product').filter(cart=cart)
 
                 result = []
@@ -199,8 +201,7 @@ class UpdateItemView(APIView):
 
                     item['id'] = cart_item.id
                     item['count'] = cart_item.count
-                    product = Product.objects.get(id=cart_item.product.id)
-                    product = ProductSerializer(product)
+                    product = ProductSerializer(cart_item.product)
 
                     item['product'] = product.data
 
@@ -250,18 +251,18 @@ class RemoveItemView(APIView):
                 total_items = int(cart.total_items) - 1
                 Cart.objects.filter(user=user).update(total_items=total_items)
 
-            cart_items = CartItem.objects.order_by('product').filter(cart=cart)
+            # Optimización: usar select_related para evitar consultas N+1
+            cart_items = CartItem.objects.select_related('product').order_by('product').filter(cart=cart)
 
             result = []
 
-            if CartItem.objects.filter(cart=cart).exists():
+            if cart_items.exists():
                 for cart_item in cart_items:
                     item = {}
 
                     item['id'] = cart_item.id
                     item['count'] = cart_item.count
-                    product = Product.objects.get(id=cart_item.product.id)
-                    product = ProductSerializer(product)
+                    product = ProductSerializer(cart_item.product)
 
                     item['product'] = product.data
 

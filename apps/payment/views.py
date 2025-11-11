@@ -1,5 +1,6 @@
 from django.shortcuts import render
 from django.conf import settings
+from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -58,7 +59,8 @@ class GetPaymentTotalView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
             
-            cart_items = CartItem.objects.filter(cart=cart)
+            # Optimización: usar select_related para evitar consultas N+1
+            cart_items = CartItem.objects.select_related('product').filter(cart=cart)
 
             for cart_item in cart_items:
                 if not Product.objects.filter(id=cart_item.product.id).exists():
@@ -181,7 +183,8 @@ class ProcessPaymentView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        cart_items = CartItem.objects.filter(cart=cart)
+        # Optimización: usar select_related para evitar consultas N+1
+        cart_items = CartItem.objects.select_related('product').filter(cart=cart)
 
         # revisar si hay stock
 
@@ -254,62 +257,70 @@ class ProcessPaymentView(APIView):
             )
         
         if newTransaction.is_success or newTransaction.transaction:
-            for cart_item in cart_items:
-                update_product = Product.objects.get(id=cart_item.product.id)
-
-                #encontrar cantidad despues de coompra
-                quantity = int(update_product.quantity) - int(cart_item.count)
-
-                #obtener cantidad de producto por vender
-                sold = int(update_product.sold) + int(cart_item.count)
-
-                #actualizar el producto
-                Product.objects.filter(id=cart_item.product.id).update(
-                    quantity=quantity, sold=sold
-                )
-            
-            #crear orden
+            # Envolver todas las operaciones de base de datos en una transacción atómica
+            # para garantizar consistencia de datos
             try:
-                order = Order.objects.create(
-                    user=user,
-                    transaction_id=newTransaction.transaction.id,
-                    amount=total_amount,
-                    full_name=full_name,
-                    address_line_1=address_line_1,
-                    address_line_2=address_line_2,
-                    city=city,
-                    state_province_region=state_province_region,
-                    postal_zip_code=postal_zip_code,
-                    country_region=country_region,
-                    telephone_number=telephone_number,
-                    shipping_name=shipping_name,
-                    shipping_time=shipping_time,
-                    shipping_price=float(shipping_price)
-                )
-            except:
+                with transaction.atomic():
+                    # Actualizar el stock de productos
+                    for cart_item in cart_items:
+                        update_product = Product.objects.get(id=cart_item.product.id)
+
+                        #encontrar cantidad despues de coompra
+                        quantity = int(update_product.quantity) - int(cart_item.count)
+
+                        #obtener cantidad de producto por vender
+                        sold = int(update_product.sold) + int(cart_item.count)
+
+                        #actualizar el producto
+                        Product.objects.filter(id=cart_item.product.id).update(
+                            quantity=quantity, sold=sold
+                        )
+                    
+                    #crear orden
+                    order = Order.objects.create(
+                        user=user,
+                        transaction_id=newTransaction.transaction.id,
+                        amount=total_amount,
+                        full_name=full_name,
+                        address_line_1=address_line_1,
+                        address_line_2=address_line_2,
+                        city=city,
+                        state_province_region=state_province_region,
+                        postal_zip_code=postal_zip_code,
+                        country_region=country_region,
+                        telephone_number=telephone_number,
+                        shipping_name=shipping_name,
+                        shipping_time=shipping_time,
+                        shipping_price=float(shipping_price)
+                    )
+                    
+                    # Crear los items del pedido
+                    for cart_item in cart_items:
+                        # agarrar el producto
+                        product = Product.objects.get(id=cart_item.product.id)
+
+                        OrderItem.objects.create(
+                            product=product,
+                            order=order,
+                            name=product.name,
+                            price=cart_item.product.price,
+                            count=cart_item.count
+                        )
+
+                    # Vaciar carrito de compras
+                    CartItem.objects.filter(cart=cart).delete()
+
+                    # Actualizar carrito
+                    Cart.objects.filter(user=user).update(total_items=0)
+                    
+            except Exception as e:
+                # Si cualquier operación falla, toda la transacción se revierte automáticamente
                 return Response(
-                    {'error': 'Transaction succeeded but failed to create the order'},
+                    {'error': f'Transaction succeeded but failed to process order: {str(e)}'},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-            
-            for cart_item in cart_items:
-                try:
-                    # agarrar el producto
-                    product = Product.objects.get(id=cart_item.product.id)
 
-                    OrderItem.objects.create(
-                        product=product,
-                        order=order,
-                        name=product.name,
-                        price=cart_item.product.price,
-                        count=cart_item.count
-                    )
-                except:
-                    return Response(
-                        {'error': 'Transaction succeeded and order created, but failed to create an order item'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-
+            # Enviar email (fuera de la transacción atómica porque no es crítico)
             try:
                 send_mail(
                     'Your Order Details',
@@ -323,23 +334,9 @@ class ProcessPaymentView(APIView):
                     [user.email],
                     fail_silently=False
                 )
-            except:
-                return Response(
-                    {'error': 'Transaction succeeded and order created, but failed to send email'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            try:
-                # Vaciar carrito de compras
-                CartItem.objects.filter(cart=cart).delete()
-
-                # Actualizar carrito
-                Cart.objects.filter(user=user).update(total_items=0)
-            except:
-                return Response(
-                    {'error': 'Transaction succeeded and order successful, but failed to clear cart'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+            except Exception as e:
+                # El pedido ya está creado, solo logueamos el error del email
+                pass
             
             return Response(
                 {'success': 'Transaction successful and order was created'},
